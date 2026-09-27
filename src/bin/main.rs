@@ -502,6 +502,9 @@ impl<'a> DualLed<'a> {
     }
 
     fn start_fade(&mut self, start: u8, end: u8, duration_ms: u16) {
+        // set_duty and start_duty_fade expect percentage values (0-100)
+        let _ = self.onboard.set_duty(start);
+        let _ = self.ext.set_duty(start);
         let _ = self.onboard.start_duty_fade(start, end, duration_ms);
         let _ = self.ext.start_duty_fade(start, end, duration_ms);
     }
@@ -517,7 +520,7 @@ impl<'a> DualLed<'a> {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    // Logger phải khởi tạo trước mọi thứ
+    // Logger must be initialized before everything else
     esp_println::logger::init_logger_from_env();
 
     info!("╔══════════════════════════════════════════════════╗");
@@ -569,7 +572,7 @@ async fn main(spawner: Spawner) -> ! {
     let mut lstimer0 = ledc.timer::<LowSpeed>(timer::Number::Timer0);
     lstimer0
         .configure(timer::config::Config {
-            duty: timer::config::Duty::Duty5Bit,
+            duty: timer::config::Duty::Duty8Bit,
             clock_source: timer::LSClockSource::APBClk,
             frequency: Rate::from_khz(24),
         })
@@ -622,7 +625,9 @@ async fn main(spawner: Spawner) -> ! {
     // Trạng thái cảm biến chạm (Mặc định BẬT SẴN để chạm vào GPIO4 là sáng đèn ngay)
     let mut touch_monitor_active = true;
     let mut touch_is_pressed = false;
-    let mut touch_baseline: u16 = 405;
+    // Khởi tạo baseline bằng đọc thực tế từ cảm biến
+    let mut touch_baseline: u16 = touch_pad.read();
+    let _ = write!(uart0, "\r\n-> Touch baseline khởi tạo: {}\r\n", touch_baseline);
     let mut last_touch_check = Instant::now();
 
     // ── Main loop: CLI Shell + LED state machine ──
@@ -764,6 +769,8 @@ async fn main(spawner: Spawner) -> ! {
                             let t = Instant::now();
                             while t.elapsed() < Duration::from_millis(80) {}
                         }
+                        // Sync led_state after blinking
+                        led_state = LedState::Off;
 
                         let current_input = core::str::from_utf8(&buf[..idx]).unwrap_or("");
                         let _ = write!(
@@ -785,6 +792,8 @@ async fn main(spawner: Spawner) -> ! {
                         let t = Instant::now();
                         while t.elapsed() < Duration::from_millis(400) {}
                         led.set_low();
+                        // Sync led_state after blinking
+                        led_state = LedState::Off;
 
                         let current_input = core::str::from_utf8(&buf[..idx]).unwrap_or("");
                         let _ = write!(
@@ -806,6 +815,8 @@ async fn main(spawner: Spawner) -> ! {
                             let t = Instant::now();
                             while t.elapsed() < Duration::from_millis(80) {}
                         }
+                        // Sync led_state after blinking
+                        led_state = LedState::Off;
 
                         let current_input = core::str::from_utf8(&buf[..idx]).unwrap_or("");
                         let _ = write!(
@@ -826,6 +837,14 @@ async fn main(spawner: Spawner) -> ! {
             if let Some(current_val) = touch_pad.try_read() {
                 SYS_TOUCH_VAL.store(current_val, core::sync::atomic::Ordering::Relaxed);
                 if touch_monitor_active {
+                    // Debug: in giá trị touch định kỳ (chỉ khi có thay đổi lớn)
+                    static mut LAST_LOGGED_VAL: u16 = 0;
+                    unsafe {
+                        if current_val.abs_diff(LAST_LOGGED_VAL) > 20 {
+                            let _ = write!(uart0, "\r\n[DEBUG] Touch val: {}, baseline: {}, pressed: {}\r\n> {}", current_val, touch_baseline, touch_is_pressed, core::str::from_utf8(&buf[..idx]).unwrap_or(""));
+                            LAST_LOGGED_VAL = current_val;
+                        }
+                    }
                     if !touch_is_pressed {
                         // Cập nhật baseline động khi không chạm
                         if current_val >= 350 {
@@ -837,7 +856,7 @@ async fn main(spawner: Spawner) -> ! {
                             led.set_high();
                             SYS_LED_STATUS.store(1, core::sync::atomic::Ordering::Relaxed);
                             led_state = LedState::On {
-                                expire_at: Some(now + Duration::from_secs(3)),
+                                expire_at: None, // Vĩnh viễn cho đến khi buông tay
                             };
                             let current_input = core::str::from_utf8(&buf[..idx]).unwrap_or("");
                             let _ = write!(
@@ -852,6 +871,8 @@ async fn main(spawner: Spawner) -> ! {
                         led.set_low();
                         SYS_LED_STATUS.store(0, core::sync::atomic::Ordering::Relaxed);
                         led_state = LedState::Off;
+                        // Cập nhật baseline mới
+                        touch_baseline = current_val;
                         let current_input = core::str::from_utf8(&buf[..idx]).unwrap_or("");
                         let _ = write!(
                             uart0,
