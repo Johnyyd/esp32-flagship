@@ -652,9 +652,15 @@ async fn main(spawner: Spawner) -> ! {
                     let _ = write!(uart0, "\r\n-> [Web Server] Nhận lệnh: TẮT LED\r\n> {}", current_input);
                 }
                 3 => {
-                    led.toggle();
-                    let st = if led.is_on { 1 } else { 0 };
-                    SYS_LED_STATUS.store(st, core::sync::atomic::Ordering::Relaxed);
+                    if led.is_on {
+                        led_state = LedState::Off;
+                        led.set_low();
+                        SYS_LED_STATUS.store(0, core::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        led_state = LedState::On { expire_at: None };
+                        led.set_high();
+                        SYS_LED_STATUS.store(1, core::sync::atomic::Ordering::Relaxed);
+                    }
                     let _ = write!(uart0, "\r\n-> [Web Server] Nhận lệnh: ĐẢO TRẠNG THÁI LED\r\n> {}", current_input);
                 }
                 4 => {
@@ -1023,6 +1029,13 @@ async fn main(spawner: Spawner) -> ! {
                                         led.toggle();
                                         let t = Instant::now();
                                         while t.elapsed() < Duration::from_millis(150) {}
+                                    }
+                                    if led.is_on {
+                                        led_state = LedState::On { expire_at: None };
+                                        SYS_LED_STATUS.store(1, core::sync::atomic::Ordering::Relaxed);
+                                    } else {
+                                        led_state = LedState::Off;
+                                        SYS_LED_STATUS.store(0, core::sync::atomic::Ordering::Relaxed);
                                     }
                                     let _ = write!(uart0, "-> Toggle {} lần.\r\n", times);
                                 }
